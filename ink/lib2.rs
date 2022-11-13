@@ -280,11 +280,9 @@ mod Keysafe {
 
         /// We test a simple use case of our contract.
         #[ink::test]
-        fn it_works() {
-            let mut flipper = Flipper::new(false);
-            assert_eq!(flipper.get(), false);
-            flipper.flip();
-            assert_eq!(flipper.get(), true);
+        fn total_supply_works() {
+            let mut kl = KeyLedger::new(30000);
+            assert_eq!(kl.total_supply, 30000);
         }
     }
 }

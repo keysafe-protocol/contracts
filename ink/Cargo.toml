@@ -1,8 +1,8 @@
 [package]
-name = "flipper"
+name = "KeyLedger"
 version = "0.1.0"
-authors = ["[your_name] <[your_email]>"]
-edition = "2021"
+authors = ["Jarod <jarodzz@gmail.com>"]
+edition = "2022"
 
 [dependencies]
 ink_primitives = { version = "3.4.0", default-features = false }
