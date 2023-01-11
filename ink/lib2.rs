@@ -1,39 +1,25 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use ink_lang as ink;
 
 #[ink::contract]
-mod Keysafe {
+mod key_ledger {
 
-    use ink_storage::{
-        traits::SpreadAllocate,
-        traits::SpreadLayout,
-        traits::PackedLayout,
-        Mapping,
-    };
+    use ink::storage::Mapping;
+    use ink::storage::traits::StorageLayout;
+    use ink_env::debug_println;
 
-    use ink_prelude::{
-        string::{
-            String,
-            ToString,
-        },
-    };
-
-
-    // Node is a machine running KeySafe secret storage
-    #[derive(Default, PartialEq, Eq, Debug, Clone, scale::Decode, scale::Encode, SpreadAllocate, SpreadLayout, PackedLayout)]
-    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     struct Node {
         nid: AccountId,
-        pubk: String
+        pub_k: String
     }
 
-    // User is someone who uses KeySafe to store secret
-    #[derive(Default, PartialEq, Eq, Debug, Clone, scale::Decode, scale::Encode, SpreadAllocate, SpreadLayout, PackedLayout)]
-    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     struct User {
         uid: AccountId,
-        pubk: String,
+        pub_k: String,
         node1_cond_type: u8,
         node1_id: AccountId,
         node2_cond_type: u8,
@@ -42,10 +28,8 @@ mod Keysafe {
         node3_id: AccountId,
     }
 
-    // A full recovery includes at least 2 nodes each provides a user 
-    // its secret share
-    #[derive(Default, PartialEq, Eq, Debug, Clone, scale::Decode, scale::Encode, SpreadAllocate, SpreadLayout, PackedLayout)]
-    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
+    #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
+    #[cfg_attr(feature = "std", derive(scale_info::TypeInfo, StorageLayout))]
     struct Recovery {
         status: u8, // 0 for not started, 1 for started, 2 for finished
         uid: AccountId,
@@ -59,14 +43,13 @@ mod Keysafe {
     }
   
     #[ink(storage)]
-    #[derive(SpreadAllocate)]
     pub struct KeyLedger {
         /// Stores balance for both user and node
         total_supply: Balance,
-        balances: ink_storage::Mapping<AccountId, Balance>,
-        nodes: ink_storage::Mapping<AccountId ,Node>,
-        users: ink_storage::Mapping<AccountId, User>,
-        recoveries: ink_storage::Mapping<AccountId, Recovery>
+        balances: Mapping<AccountId, Balance>,
+        nodes: Mapping<AccountId ,Node>,
+        users: Mapping<AccountId, User>,
+        recoveries: Mapping<AccountId, Recovery>
     }
 
     pub type Result<T> = core::result::Result<T, Error>;
@@ -83,15 +66,19 @@ mod Keysafe {
         /// Constructor that initializes maps
         #[ink(constructor)]
         pub fn new(total_supply: Balance) -> Self {
-            ink_lang::utils::initialize_contract(|contract| {
-                Self::new_init(contract, total_supply)
-            })
-        }
-
-        fn new_init(&mut self, initial_supply: Balance) {
+            let mut balances = Mapping::default();
+            let mut nodes = Mapping::default();
+            let mut users = Mapping::default();
+            let mut recoveries  = Mapping::default();
             let caller = Self::env().caller();
-            self.balances.insert(&caller, &initial_supply);
-            self.total_supply = initial_supply;
+            balances.insert(caller, &total_supply);
+            Self {
+                total_supply: total_supply,
+                balances: balances,
+                nodes: nodes,
+                users: users,
+                recoveries: recoveries,
+            }
         }
 
         #[ink(message)]
@@ -134,7 +121,7 @@ mod Keysafe {
 
         // for new machines just install node app, call register_node to alert the chain
         #[ink(message)]
-        pub fn register_node(&mut self, pubk: String) {
+        pub fn register_node(&mut self, pub_k: String) {
             let sender = self.env().caller();
             let node = self.nodes.get(sender);
             match node {
@@ -142,9 +129,19 @@ mod Keysafe {
                 None => {
                     self.nodes.insert(sender, &Node {
                         nid: sender,
-                        pubk: pubk
-                    })
+                        pub_k: pub_k.to_string()
+                    });
                 }
+            }
+        }
+
+        #[ink(message)]
+        pub fn verify_node(&mut self, pub_k: String) -> bool {
+            let sender = self.env().caller();
+            let node = self.nodes.get(sender);
+            match node {
+                Some(n) => n.pub_k == pub_k,
+                None => false
             }
         }
 
@@ -161,14 +158,14 @@ mod Keysafe {
         // for new user, call register user after all user secret shares are 
         // stored in 3 nodes
         #[ink(message)]
-        pub fn register_user(&mut self, pubk: String,
+        pub fn register_user(&mut self, pub_k: String,
             node1_cond_type: u8, node1_id: AccountId,
             node2_cond_type: u8, node2_id: AccountId,
             node3_cond_type: u8, node3_id: AccountId) {
             let sender = self.env().caller();
             let user = User {
                 uid: sender,
-                pubk: pubk,
+                pub_k: pub_k,
                 node1_cond_type: node1_cond_type,
                 node1_id: node1_id,
                 node2_cond_type: node2_cond_type,
@@ -189,6 +186,22 @@ mod Keysafe {
                 node3_confirm: 0
             };
             self.recoveries.insert(sender, &recovery);
+        }
+
+        #[ink(message)]
+        pub fn verify_new_user(&self, pub_k: String) -> bool {
+            let sender = self.env().caller();
+            let user = self.users.get(sender);
+            let recovery = self.recoveries.get(sender);
+            let u = match user {
+                Some(user) => user,
+                None => return false
+            };
+            let r = match recovery {
+                Some(recovery) => recovery,
+                None => return false
+            };
+            u.pub_k == pub_k && r.status == 0
         }
 
         // before user try to access its secret, call request_recovery 
@@ -214,29 +227,45 @@ mod Keysafe {
                     node3_confirm: 0,
                     ..r
                 };
+
                 self.recoveries.insert(sender, &r1);
             }
+        }
+
+        #[ink(message)]
+        pub fn verify_new_recovery(&self) -> bool{
+            let sender = self.env().caller();
+            let r = self.recoveries.get(sender);
+            if let Some(r) = r {
+                debug_println!("find recovery info");
+                return r.status == 1;
+            }
+            false
         }
 
         // before user try to access its secret, call request_recovery 
         #[ink(message)]
         pub fn finish_recovery(&mut self, user: AccountId, proof: String) {
-            let sender = self.env().caller();
+            let node = self.env().caller();
             let user_info = self.users.get(user);
             if let Some(u) = user_info {
+                debug_println!("finish recovery find user info");
                 let recovery_info = self.recoveries.get(user);
                 if let Some(mut r) = recovery_info {
                     // when user did not start recovery before node, quit
                     if r.status != 1 {
                         return
                     }
-                    if u.node1_id == sender {
+                    if u.node1_id == node {
+                        debug_println!("finish recovery match node1");
                         r.node1_confirm = 1;
                         r.recovery1_proof = proof;
-                    } else if u.node2_id == sender {
+                    } else if u.node2_id == node {
+                        debug_println!("finish recovery match node2");
                         r.node2_confirm = 1;
                         r.recovery2_proof = proof;
-                    } else if u.node3_id == sender {
+                    } else if u.node3_id == node {
+                        debug_println!("finish recovery match node3");
                         r.node3_confirm = 1;
                         r.recovery3_proof = proof;
                     } else {
@@ -244,6 +273,8 @@ mod Keysafe {
 
                     let confirm_parts = r.node1_confirm + r.node2_confirm + r.node3_confirm;
                     if confirm_parts >= 2 {
+                        // when recovery completed, send coin from user to node.
+                        debug_println!("finish recovery finish 2 shares");
                         let r1 = Recovery {
                             r_times: r.r_times + 1,
                             status: 2,
@@ -253,6 +284,9 @@ mod Keysafe {
                         self.transfer_from_to(&user, &u.node1_id, 1);
                         self.transfer_from_to(&user, &u.node2_id, 1);
                         self.transfer_from_to(&user, &u.node3_id, 1);
+                    } else {
+                        // when recovery not completed, record partial recovery
+                        self.recoveries.insert(user, &r);
                     }
                 }
             }
@@ -267,22 +301,101 @@ mod Keysafe {
         /// Imports all the definitions from the outer scope so we can use them here.
         use super::*;
 
-        /// Imports `ink_lang` so we can use `#[ink::test]`.
-        use ink_lang as ink;
-
         /// We test if the default constructor does its job.
         #[ink::test]
-        fn default_works() {
-            let kl = KeyLedger::default();
-            let nodes = kl.get_nodes();
-            assert_eq!(nodes.is_empty(), true);
+        fn test_default_works() {
+            let kl = KeyLedger::new(100);
+            assert_eq!(kl.total_supply(), 100);
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            assert_eq!(kl.balance_of(accounts.alice), 100);
         }
 
-        /// We test a simple use case of our contract.
         #[ink::test]
-        fn total_supply_works() {
-            let mut kl = KeyLedger::new(30000);
-            assert_eq!(kl.total_supply, 30000);
+        fn test_transfer() {
+            let mut kl: KeyLedger = KeyLedger::new(100);
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            kl.transfer(accounts.bob, 10);
+            assert_eq!(kl.balance_of(accounts.bob), 10);            
+            assert_eq!(kl.balance_of(accounts.alice), 90);
         }
+
+        #[ink::test]
+        fn test_register_node() {
+            let mut kl: KeyLedger = KeyLedger::new(100);
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+            kl.register_node("some_node".to_string());
+            assert_eq!(kl.verify_node("some_node".to_string()), true);
+        }
+
+        #[ink::test]
+        fn test_register_user() {
+            let mut kl: KeyLedger = KeyLedger::new(100);
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(accounts.bob);
+            let node1 = accounts.charlie;
+            let node2 = accounts.django;
+            let node3 = accounts.eve;
+            kl.register_user("some_node".to_string(),
+                1, node1, 2, node2, 3, node3);
+            assert_eq!(kl.verify_new_user("some_node".to_string()), true);
+        }
+
+        #[ink::test]
+        fn test_start_recovery() {
+            let mut kl: KeyLedger = KeyLedger::new(100);
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            let user = accounts.bob;
+            kl.transfer(user, 10);
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(user);
+            let node1 = accounts.charlie;
+            let node2 = accounts.django;
+            let node3 = accounts.eve;
+            kl.register_user("some_user".to_string(),
+                1, node1, 2, node2, 3, node3);
+            kl.start_recovery();
+            assert_eq!(kl.verify_new_recovery(), true);
+        }
+
+
+        #[ink::test]
+        fn test_recovery() {
+            let mut kl: KeyLedger = KeyLedger::new(100);
+            let accounts = ink::env::test::default_accounts::<ink::env::DefaultEnvironment>();
+            // transfer some coin to bob for him to recover his account
+            let user = accounts.bob;
+            kl.transfer(user, 10);
+            
+            let node1 = accounts.charlie;
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(node1);
+            kl.register_node("node1".to_string());
+
+            let node2 = accounts.django;
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(node2);
+            kl.register_node("node2".to_string());
+
+            let node3 = accounts.eve;
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(node3);
+            kl.register_node("node3".to_string());
+
+            // user start recovery
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(user);
+            kl.register_user("some_node".to_string(),
+                1, node1, 2, node2, 3, node3);
+            kl.start_recovery();
+
+            // node report finish recovery 
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(node3);
+            kl.finish_recovery(user, "proof1".to_string());
+            ink::env::test::set_caller::<ink::env::DefaultEnvironment>(node2);
+            kl.finish_recovery(user, "proof2".to_string());
+
+            assert_eq!(kl.balance_of(user), 7);
+            assert_eq!(kl.balance_of(node1), 1);
+            assert_eq!(kl.balance_of(node2), 1);
+            assert_eq!(kl.balance_of(node3), 1);   
+        }
+
+
     }
 }
